@@ -8,6 +8,11 @@
 #include <thrift/transport/TBufferTransports.h>
 
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <vector>
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -16,6 +21,49 @@ using namespace ::apache::thrift::server;
 
 using namespace  ::match_service;
 using namespace std;
+
+struct Task{
+    User user;
+    string type;
+};
+
+struct MessageQueue{
+    queue<Task> q;
+    mutex m;
+    condition_variable cv;
+}message_queue;
+
+class Pool{
+    public:
+        void save_result(int a,int b){
+            printf("Match Result: %d %d\n",a,b);
+        }
+
+        void match(){
+            while(users.size()>1){
+                auto a=users[0],b=users[1];
+                users.erase(users.begin());
+                users.erase(users.begin());
+
+                save_result(a.id, b.id);
+            }
+        }
+
+        void add(User user){
+            users.push_back(user);
+        }
+
+        void remove(User user){
+            for(uint32_t i=0;i<users.size();i++){
+                if(users[i].id==user.id){
+                    users.erase(users.begin()+i);
+                    break;
+                }
+            }
+        }
+    private:
+        vector<User> users;         //玩家users用vector存
+}pool;
 
 class MatchHandler : virtual public MatchIf {
     public:
@@ -27,6 +75,10 @@ class MatchHandler : virtual public MatchIf {
             // Your implementation goes here
             printf("add_user\n");
 
+            unique_lock<mutex> lck(message_queue.m);    //这样上锁可以不用手动解锁，函数执行完后会自动销毁
+            message_queue.q.push({user, "add"});
+            message_queue.cv.notify_all();      //通知所有被环境变量卡住的线程，all/one代表所有线程或者随机一个线程
+
             return 0;
         }
 
@@ -34,10 +86,34 @@ class MatchHandler : virtual public MatchIf {
             // Your implementation goes here
             printf("remove_user\n");
 
+            unique_lock<mutex> lck(message_queue.m);
+            message_queue.q.push({user, "remove"});
+            message_queue.cv.notify_all();
+
             return 0;
         }
 
 };
+
+void consume_task(){
+    while(true){
+        unique_lock<mutex> lck(message_queue.m);
+        if(message_queue.q.empty()){
+            message_queue.cv.wait(lck);     //如果线程是空的，那就应该蚌住，先将锁释放掉然后卡死在这，直到环境变量被其他地方唤醒
+        }
+        else{
+            auto task=message_queue.q.front();
+            message_queue.q.pop();
+            lck.unlock();       //共享变量处理完后记得解锁，不然持有锁时间太长卡死另外add跟remove两个线程
+
+            //do task
+            if(task.type=="add") pool.add(task.user);
+            else if(task.type=="remove") pool.remove(task.user);
+
+            pool.match();
+        }
+    }
+}
 
 int main(int argc, char **argv) {
     int port = 9090;
@@ -50,6 +126,8 @@ int main(int argc, char **argv) {
     TSimpleServer server(processor, serverTransport, transportFactory, protocolFactory);
 
     cout << "Star Match Server" << endl;
+
+    thread matching_thread(consume_task);
 
     server.serve();
     return 0;
