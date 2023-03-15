@@ -65,23 +65,49 @@ class Pool{
             }
         }
 
+        bool check_match(uint32_t i, uint32_t j){
+            auto a=users[i], b=users[j];
+
+            int dt=abs(a.score-b.score);
+            int a_max_dif=wt[i]*50;
+            int b_max_dif=wt[j]*50;
+
+            return dt<=a_max_dif && dt<=b_max_dif;
+        }
+
         void match(){
+            for(uint32_t i=0;i<wt.size();i++)
+                wt[i]++;            //表示等待秒数+1
+
             while(users.size()>1){
-                sort(users.begin(),users.end(),[&](User& a,User& b){
+                /*sort(users.begin(),users.end(),[&](User& a,User& b){
                         return a.score < b.score;
-                        });
+                        });*/
 
                 bool flag=true;         //保证while循环不能死循环，如果分差1000且只有两个人的话就会死循环
 
-                for(uint32_t i=1;i<users.size();i++){
-                    auto a=users[i-1], b=users[i];
+                for(uint32_t i=0;i<users.size();i++){
+                    /*auto a=users[i-1], b=users[i];
                     if(b.score-a.score<=50){
                         users.erase(users.begin()+i-1,users.begin()+i+1);           //左闭右开的区间
                         save_result(a.id,b.id);
 
                         flag=false;
-                        break;
+                        break;*/
+                    for(uint32_t j=i+1;j<users.size();j++){
+                        if(check_match(i,j)){
+                            auto a=users[i],b=users[j];
+                            users.erase(users.begin()+j);               //先删后面的再删前面的，保证前面下标不变化
+                            users.erase(users.begin()+i);
+                            wt.erase(wt.begin()+j);
+                            wt.erase(wt.begin()+i);
+                            save_result(a.id,b.id);
+                            flag=false;
+                            break;
+                        }
                     }
+
+                    if(!flag) break;    //表示已经发生过匹配了
                 }
 
                 if(flag) break;         //flag为true说明没有任何玩家可以匹配，跳出while
@@ -90,19 +116,21 @@ class Pool{
 
         void add(User user){
             users.push_back(user);
+            wt.push_back(0);
         }
 
         void remove(User user){
             for(uint32_t i=0;i<users.size();i++){
                 if(users[i].id==user.id){
                     users.erase(users.begin()+i);
+                    wt.erase(wt.begin()+i);
                     break;
                 }
             }
         }
     private:
-
         vector<User> users;         //玩家users用vector存
+        vector<int> wt;             //已经等待的秒数waiting time
 }pool;
 
 class MatchHandler : virtual public MatchIf {
@@ -159,7 +187,7 @@ void consume_task(){
         if(message_queue.q.empty()){
             //message_queue.cv.wait(lck);     如果线程是空的，那就应该蚌住，先将锁释放掉然后卡死在这，直到环境变量被其他地方唤醒
             lck.unlock();       //解锁
-            pool.match();            //匹配
+            pool.match();            //在这里匹配可以保证每一次匹配只等待一秒，然后再去匹配下一次
             sleep(1);           //睡眠一秒然后继续
         }
         else{
@@ -171,7 +199,7 @@ void consume_task(){
             if(task.type=="add") pool.add(task.user);
             else if(task.type=="remove") pool.remove(task.user);
 
-            pool.match();
+            //pool.match();         需要把这里的match给删掉，因为不删的话每来一个人都会匹配一次每个都会+1
         }
     }
 }
