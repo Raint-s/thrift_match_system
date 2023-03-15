@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <queue>
 #include <vector>
+#include <unistd.h>
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -62,11 +63,24 @@ class Pool{
 
         void match(){
             while(users.size()>1){
-                auto a=users[0],b=users[1];
-                users.erase(users.begin());
-                users.erase(users.begin());
+                sort(users.begin(),users.end(),[&](User& a,User& b){
+                    return a.score < b.score;
+                });
 
-                save_result(a.id, b.id);
+                bool flag=true;         //保证while循环不能死循环，如果分差1000且只有两个人的话就会死循环
+
+                for(uint32_t i=1;i<users.size();i++){
+                    auto a=users[i-1], b=users[i];
+                    if(b.score-a.score<=50){
+                        users.erase(users.begin()+i-1,users.begin()+i+1);           //左闭右开的区间
+                        save_result(a.id,b.id);
+
+                        flag=false;
+                        break;
+                    }
+                }
+
+                if(flag) break;         //flag为true说明没有任何玩家可以匹配，跳出while
             }
         }
 
@@ -121,7 +135,10 @@ void consume_task(){
     while(true){
         unique_lock<mutex> lck(message_queue.m);
         if(message_queue.q.empty()){
-            message_queue.cv.wait(lck);     //如果线程是空的，那就应该蚌住，先将锁释放掉然后卡死在这，直到环境变量被其他地方唤醒
+            //message_queue.cv.wait(lck);     如果线程是空的，那就应该蚌住，先将锁释放掉然后卡死在这，直到环境变量被其他地方唤醒
+            lck.unlock();       //解锁
+            pool.match();            //匹配
+            sleep(1);           //睡眠一秒然后继续
         }
         else{
             auto task=message_queue.q.front();
@@ -130,8 +147,7 @@ void consume_task(){
 
             //do task
             if(task.type=="add") pool.add(task.user);
-            else if(task.type=="remove") pool
-.remove(task.user);
+            else if(task.type=="remove") pool.remove(task.user);
 
             pool.match();
         }
